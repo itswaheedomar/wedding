@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kindle Web Reader</title>
+<style>
+:root{
+  --bg-light:#ffffff;
+  --bg-candle:#fdf3e2;
+  --bg-dark:#1b1b1b;
+  --paper-light:#fefefe;
+  --paper-candle:#fff8e1;
+  --paper-dark:#2b2b2b;
+  --text-light:#000000;
+  --text-candle:#3a2b1d;
+  --text-dark:#e6e6e6;
+  --accent:#b68d4c;
+  --button-bg:#3a4a6b; /* darker buttons */
+  --button-hover:#2c3a55;
+}
+html,body{margin:0;padding:0;height:100%;font-family:'Georgia',serif;transition:background 0.3s,color 0.3s;}
+body.light{background:var(--bg-light);color:var(--text-light);}
+body.candle{background:var(--bg-candle);color:var(--text-candle);}
+body.dark{background:var(--bg-dark);color:var(--text-dark);}
+.app{max-width:900px;margin:20px auto;padding:0 15px;}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;flex-wrap:wrap;}
+.header h1{font-size:1.6rem;transition:color 0.3s;}
+.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px;}
+.controls button, .controls select, .controls label{
+  padding:10px 14px;border-radius:12px;border:none;font-weight:600;cursor:pointer;transition:all 0.3s;position:relative;overflow:hidden;
+  background:var(--button-bg);color:#fff;box-shadow:0 5px 15px rgba(0,0,0,0.2);
+}
+.controls button:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,0.3);}
+.controls button:active{transform:translateY(1px);box-shadow:0 4px 12px rgba(0,0,0,0.2);}
+.controls select{background:#fff;color:#333;border:1px solid #ccc;}
+.reader-wrap{position:relative;border-radius:12px;overflow:hidden;min-height:65vh;transition:background 0.3s;}
+.reader-wrap.light{background:var(--paper-light);}
+.reader-wrap.candle{background:var(--paper-candle);}
+.reader-wrap.dark{background:var(--paper-dark);}
+.page{position:absolute;inset:0;padding:40px 36px;border-radius:12px;overflow:hidden;display:flex;align-items:flex-start;justify-content:center;transition:transform 0.4s ease, background 0.3s;}
+.page-inner{max-width:720px;line-height:1.9;white-space:pre-wrap;font-size:18px;transition:color 0.3s;}
+.small-font .page-inner{font-size:15px;}
+.large-font .page-inner{font-size:22px;}
+.footer{margin-top:12px;font-size:13px;text-align:center;color:#666;}
+input[type=file]{display:none;}
+.page.slide-in-next{transform:translateX(100%);animation:slideInNext 0.4s forwards;}
+.page.slide-in-prev{transform:translateX(-100%);animation:slideInPrev 0.4s forwards;}
+@keyframes slideInNext{to{transform:translateX(0);}}
+@keyframes slideInPrev{to{transform:translateX(0);}}
+</style>
+</head>
+<body class="candle">
+<div class="app">
+  <div class="header">
+    <h1 id="headerTitle">Welcome to Kindle Web Reader</h1>
+    <div class="controls">
+      <label>
+        Upload PDF/TXT
+        <input type="file" id="fileInput" accept=".pdf,.txt">
+      </label>
+      <select id="themeSelect">
+        <option value="light">Light</option>
+        <option value="candle" selected>Candle</option>
+        <option value="dark">Dark</option>
+      </select>
+      <button id="prevBtn">◀ Prev</button>
+      <button id="nextBtn">Next ▶</button>
+      <button id="fontDec">A-</button>
+      <button id="fontInc">A+</button>
+      <button id="saveBtn">💾 Save</button>
+    </div>
+  </div>
+  <div class="reader-wrap candle" id="viewport"></div>
+  <div class="footer">Use ← → keys for navigation, + / - for font size. Candle mode is easy on the eyes.</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+let rawText='', pages=[], currentPage=1, fontState='medium', currentFileKey=null;
+const viewport=document.getElementById('viewport');
+const fileInput=document.getElementById('fileInput');
+const prevBtn=document.getElementById('prevBtn');
+const nextBtn=document.getElementById('nextBtn');
+const fontDec=document.getElementById('fontDec');
+const fontInc=document.getElementById('fontInc');
+const saveBtn=document.getElementById('saveBtn');
+const themeSelect=document.getElementById('themeSelect');
+const headerTitle=document.getElementById('headerTitle');
+
+function applyTheme(theme){
+  document.body.classList.remove('light','candle','dark');
+  document.body.classList.add(theme);
+  viewport.classList.remove('light','candle','dark');
+  viewport.classList.add(theme);
+  // Change header text depending on theme
+  if(theme==='light') headerTitle.textContent='Reading in Light Mode';
+  else if(theme==='candle') headerTitle.textContent='Reading in Candle Mode';
+  else headerTitle.textContent='Reading in Dark Mode';
+}
+themeSelect.addEventListener('change', e => applyTheme(e.target.value));
+
+fileInput.addEventListener('change', async e => {
+    const file=e.target.files[0];
+    if(!file) return;
+    setupBook(file.name);
+    currentFileKey='kindle::'+file.name;
+    const ext=file.name.split('.').pop().toLowerCase();
+    try {
+        if(ext==='txt'){
+            const reader=new FileReader();
+            reader.onload=function(ev){rawText=ev.target.result;afterText();}
+            reader.readAsText(file,'UTF-8'); // ensure proper encoding
+        } else if(ext==='pdf'){
+            rawText=await extractPDF(file);afterText();
+        } else alert('Only PDF or TXT supported.');
+    } catch(err){console.error(err); alert('Failed to read file: '+err.message);}
+});
+
+async function extractPDF(file){
+    const buf=await file.arrayBuffer();
+    const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+    let txt='';
+    for(let i=1;i<=pdf.numPages;i++){
+        const pg=await pdf.getPage(i);
+        const content=await pg.getTextContent();
+        // Filter out weird characters
+        txt+=content.items.map(t=>t.str.replace(/[^\x00-\xFF]/g,'')).join(' ')+'\n\n';
+    } return txt;
+}
+
+function setupBook(name){rawText='';pages=[];currentPage=1;viewport.innerHTML='';}
+function afterText(){rawText=rawText.replace(/\r/g,'\n').replace(/\n{3,}/g,'\n\n').trim();paginate();loadProgress();renderPage(currentPage,true);}
+function paginate(){
+    pages=[];const words=rawText.split(/\s+/);let i=0;
+    const measure=document.createElement('div');measure.style.position='absolute';measure.style.visibility='hidden';
+    measure.style.width=(viewport.clientWidth-60)+'px';measure.style.padding='0 36px';measure.style.lineHeight='1.9';
+    measure.style.whiteSpace='pre-wrap';measure.style.fontSize=getFontSize();document.body.appendChild(measure);
+    while(i<words.length){
+        measure.textContent='';let j=i,maxH=viewport.clientHeight-40;
+        while(j<words.length){measure.textContent+=(j===i?'':' ')+words[j];if(measure.scrollHeight>maxH) break;j++;}
+        if(j===i) j=i+1;pages.push(words.slice(i,j).join(' '));i=j;
+    } document.body.removeChild(measure);if(pages.length===0) pages.push(rawText);
+}
+function getFontSize(){if(fontState==='small') return'15px';if(fontState==='large') return'22px';return'18px';}
+function renderPage(n,noAnim=false){
+    if(!pages.length){viewport.innerHTML='<div class="page"><div class="page-inner">No book loaded</div></div>';return;}
+    n=Math.max(1,Math.min(n,pages.length));
+    const direction=n>currentPage?'slide-in-next':'slide-in-prev';
+    currentPage=n;viewport.innerHTML='';
+    const div=document.createElement('div');div.className='page '+direction;
+    const inner=document.createElement('div');inner.className='page-inner';inner.textContent=pages[n-1]||'';div.appendChild(inner);
+    viewport.appendChild(div);document.body.classList.remove('small-font','large-font');
+    if(fontState==='small') document.body.classList.add('small-font');
+    if(fontState==='large') document.body.classList.add('large-font');
+    saveProgressAuto();
+}
+
+prevBtn.addEventListener('click',()=>{if(currentPage>1) renderPage(currentPage-1);});
+nextBtn.addEventListener('click',()=>{if(currentPage<pages.length) renderPage(currentPage+1);});
+fontInc.addEventListener('click',()=>{if(fontState==='small') fontState='medium';else if(fontState==='medium') fontState='large';renderPage(currentPage);});
+fontDec.addEventListener('click',()=>{if(fontState==='large') fontState='medium';else if(fontState==='medium') fontState='small';renderPage(currentPage);});
+saveBtn.addEventListener('click',()=>{saveProgressManual();});
+
+function saveProgressAuto(){if(currentFileKey) localStorage.setItem(currentFileKey,JSON.stringify({page:currentPage,timestamp:Date.now()}));}
+function saveProgressManual(){if(currentFileKey){localStorage.setItem(currentFileKey,JSON.stringify({page:currentPage,timestamp:Date.now()}));alert('Progress saved!');}}
+function loadProgress(){if(!currentFileKey) return;const saved=localStorage.getItem(currentFileKey);if(saved){const s=JSON.parse(saved);if(s && s.page) currentPage=Math.min(s.page,pages.length)||1;}}
+
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight') nextBtn.click();if(e.key==='ArrowLeft') prevBtn.click();if(e.key==='+'||e.key==='=') fontInc.click();if(e.key==='-') fontDec.click();});
+let resizeTimer=null;window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{if(rawText){paginate();renderPage(currentPage,true);}},350);});
+</script>
+</body>
+</html>
